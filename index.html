@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Colour Crayons — Vacky Games</title>
+<meta name="description" content="Tap a crayon to paint a whole row or column and redraw the picture.">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;background:#f7efe1;overflow:hidden;user-select:none;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#3b3229}
+  canvas{display:block;touch-action:none}
+  .ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:16px;background:rgba(247,239,225,.95);z-index:9;text-align:center;padding:24px}
+  .hidden{display:none}
+  #langBox{z-index:20;background:#f7efe1}
+  h1{font-size:29px;letter-spacing:.02em;color:#c8683a}
+  h2{font-size:23px}
+  p{opacity:.66;font-size:14px;line-height:1.6;max-width:300px}
+  .btn{background:#c8683a;color:#fff8ec;border:0;border-radius:16px;padding:14px 34px;
+    font:700 16px/1 inherit;cursor:pointer;box-shadow:0 4px 0 #9c4d28}
+  .btn:active{transform:translateY(3px);box-shadow:0 1px 0 #9c4d28}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="langBox" class="ov hidden">
+  <h2 id="langTitle" style="font-size:19px;margin-bottom:4px">Language</h2>
+  <div id="langList" style="display:flex;flex-wrap:wrap;gap:9px;justify-content:center;
+    align-content:center;max-width:340px"></div>
+</div>
+
+<div id="start" class="ov">
+  <h1>COLOUR CRAYONS</h1>
+  <p id="desc"></p>
+  <button class="btn" id="btnPlay">РИСОВАТЬ</button>
+  <button class="btn" id="btnNew" style="background:#fdf6e8;color:#3b3229;box-shadow:0 4px 0 #d8cbb4">С НАЧАЛА</button>
+  <div id="totalStars" style="font-size:15px;opacity:.6"></div>
+  <button id="langBtn" style="position:fixed;top:16px;right:16px;background:#fdf6e8;
+    border:2.5px solid #3b3229;border-radius:12px;padding:7px 13px;font:800 13px/1 inherit;
+    color:#3b3229;cursor:pointer"></button>
+  <div id="verTag" style="font-size:11px;opacity:.4;letter-spacing:.1em"></div>
+</div>
+
+
+
+<script>
+"use strict";
+const VERSION = "1.5";
+
+/* ══════════════════════════════════════════════════════════════
+   Colour Crayons — механика простая: мелок красит целую линию,
+   поздний мазок перекрывает ранний. Вся индивидуальность в
+   подаче: тёплая бумага, кривые линии «от руки», восковые мелки
+   вместо валиков, клетки как наклеенные бумажки.
+   ══════════════════════════════════════════════════════════════ */
+
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let W, H, DPR;
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  cv.style.width = W + "px"; cv.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layout();
+}
+addEventListener("resize", resize);
+
+/* тёплая палитра под фирменный стиль канала */
+const COLORS = {
+  terracotta: { fill: "#e0714a", dark: "#b4502e" },
+  mustard:    { fill: "#e8b13c", dark: "#bd8619" },
+  teal:       { fill: "#4f9a90", dark: "#357168" },
+  plum:       { fill: "#9c5f8e", dark: "#77436c" },
+  sage:       { fill: "#8aa86a", dark: "#66834a" },
+};
+const CKEYS = Object.keys(COLORS);
+const INK = "#3b3229", PAPER = "#f7efe1", EMPTY = "#ece0cd", WOOD = "#c9a06a";
+
+/* карандашные линии: чуть кривые и одинаковые от кадра к кадру */
+function hash(a, b) { const s = Math.sin(a * 12.9898 + b * 4.1414) * 43758.5453; return s - Math.floor(s); }
+function wobbleRect(g, x, y, w, h, r) {
+  const o = (i, j) => (hash(x + i, y + j) - .5) * Math.min(3, w * .04);
+  g.beginPath();
+  g.moveTo(x + r + o(1, 1), y + o(2, 1));
+  g.lineTo(x + w - r + o(3, 1), y + o(4, 1));
+  g.quadraticCurveTo(x + w, y, x + w + o(5, 2), y + r + o(6, 2));
+  g.lineTo(x + w + o(7, 3), y + h - r + o(8, 3));
+  g.quadraticCurveTo(x + w, y + h, x + w - r + o(9, 4), y + h + o(1, 5));
+  g.lineTo(x + r + o(2, 6), y + h + o(3, 6));
+  g.quadraticCurveTo(x, y + h, x + o(4, 7), y + h - r + o(5, 7));
+  g.lineTo(x + o(6, 8), y + r + o(7, 8));
+  g.quadraticCurveTo(x, y, x + r + o(8, 9), y + o(9, 9));
+  g.closePath();
+}
+
+/* ── звук ── */
+let AC = null;
+const audio = () => AC || (AC = new (window.AudioContext || webkitAudioContext)());
+function beep(f, d, ty = "sine", v = .05, sl = 0) {
+  if (muted) return;
+  try {
+    const a = audio(), o = a.createOscillator(), g = a.createGain();
+    o.type = ty; o.frequency.setValueAtTime(f, a.currentTime);
+    if (sl) o.frequency.exponentialRampToValueAtTime(Math.max(60, f + sl), a.currentTime + d);
+    g.gain.setValueAtTime(v, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(.0001, a.currentTime + d);
+    o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime + d);
+  } catch (e) {}
+}
+const SFX = {
+  draw: () => beep(240, .26, "sawtooth", .022, 90),
+  tile: () => beep(520 + Math.random() * 160, .05, "triangle", .022, 90),
+  win:  () => [523, 659, 784, 1047].forEach((n, i) => setTimeout(() => beep(n, .17, "triangle", .055), i * 95)),
+};
+
+/* ── язык: английский по умолчанию, русский подхватывается автоматом ──
+   Текста в игре намеренно мало: чем меньше слов, тем меньше барьер.  */
+const STR = {
+  en: { name: "English", play: "PLAY", cont: "CONTINUE", fresh: "NEW GAME",
+    desc: "Tap a crayon — it paints its whole row or column.<br>New colour covers the old one.<br>Redraw the picture above.",
+    pic: "Picture", strokes: "strokes", par: "par", hint: "tap a crayon", win: "NICE MATCH!", next: "NEXT" },
+  es: { name: "Español", play: "JUGAR", cont: "CONTINUAR", fresh: "NUEVA PARTIDA",
+    desc: "Toca una cera: pinta toda su fila o columna.<br>El color nuevo cubre el viejo.<br>Reproduce el dibujo de arriba.",
+    pic: "Dibujo", strokes: "trazos", par: "ideal", hint: "toca una cera", win: "¡IGUALITO!", next: "SIGUIENTE" },
+  pt: { name: "Português", play: "JOGAR", cont: "CONTINUAR", fresh: "NOVO JOGO",
+    desc: "Toque num giz: ele pinta a linha ou coluna inteira.<br>A cor nova cobre a antiga.<br>Refaça o desenho acima.",
+    pic: "Desenho", strokes: "traços", par: "ideal", hint: "toque num giz", win: "IGUALZINHO!", next: "PRÓXIMO" },
+  fr: { name: "Français", play: "JOUER", cont: "CONTINUER", fresh: "NOUVELLE PARTIE",
+    desc: "Touche un crayon : il peint toute sa ligne ou colonne.<br>La nouvelle couleur recouvre l'ancienne.<br>Reproduis le dessin du haut.",
+    pic: "Dessin", strokes: "traits", par: "idéal", hint: "touche un crayon", win: "BIEN VU !", next: "SUIVANT" },
+  de: { name: "Deutsch", play: "SPIELEN", cont: "WEITER", fresh: "NEUES SPIEL",
+    desc: "Tippe auf einen Stift – er malt die ganze Reihe oder Spalte.<br>Neue Farbe überdeckt die alte.<br>Male das Bild oben nach.",
+    pic: "Bild", strokes: "Striche", par: "Ziel", hint: "tippe auf einen Stift", win: "GENAU SO!", next: "WEITER" },
+  it: { name: "Italiano", play: "GIOCA", cont: "CONTINUA", fresh: "NUOVA PARTITA",
+    desc: "Tocca un pastello: colora tutta la riga o colonna.<br>Il nuovo colore copre il vecchio.<br>Rifai il disegno in alto.",
+    pic: "Disegno", strokes: "tratti", par: "ideale", hint: "tocca un pastello", win: "UGUALE!", next: "AVANTI" },
+  pl: { name: "Polski", play: "GRAJ", cont: "DALEJ", fresh: "NOWA GRA",
+    desc: "Dotknij kredki — pomaluje cały rząd lub kolumnę.<br>Nowy kolor zakrywa stary.<br>Odtwórz obrazek u góry.",
+    pic: "Obrazek", strokes: "ruchy", par: "cel", hint: "dotknij kredki", win: "PASUJE!", next: "DALEJ" },
+  tr: { name: "Türkçe", play: "OYNA", cont: "DEVAM", fresh: "YENİ OYUN",
+    desc: "Bir boya kalemine dokun — tüm satırı veya sütunu boyar.<br>Yeni renk eskisini örter.<br>Yukarıdaki resmi yeniden çiz.",
+    pic: "Resim", strokes: "hamle", par: "hedef", hint: "kaleme dokun", win: "TIPATIP!", next: "İLERİ" },
+  id: { name: "Indonesia", play: "MAIN", cont: "LANJUT", fresh: "MULAI BARU",
+    desc: "Ketuk krayon — ia mewarnai satu baris atau kolom.<br>Warna baru menutup warna lama.<br>Tiru gambar di atas.",
+    pic: "Gambar", strokes: "coretan", par: "target", hint: "ketuk krayon", win: "MIRIP!", next: "LANJUT" },
+  hi: { name: "हिन्दी", play: "खेलें", cont: "जारी रखें", fresh: "नया खेल",
+    desc: "क्रेयॉन दबाएँ — यह पूरी पंक्ति या स्तंभ रंगता है।<br>नया रंग पुराने को ढक देता है।<br>ऊपर वाली तस्वीर बनाएँ।",
+    pic: "तस्वीर", strokes: "चालें", par: "लक्ष्य", hint: "क्रेयॉन दबाएँ", win: "बिलकुल सही!", next: "आगे" },
+  ja: { name: "日本語", play: "あそぶ", cont: "つづきから", fresh: "さいしょから",
+    desc: "クレヨンをタップすると、その行や列がぬれます。<br>新しい色が上からかぶさります。<br>上のえをまねしよう。",
+    pic: "え", strokes: "ぬった", par: "もくひょう", hint: "クレヨンをタップ", win: "そっくり！", next: "つぎへ" },
+  ko: { name: "한국어", play: "시작", cont: "이어하기", fresh: "새로 시작",
+    desc: "크레용을 누르면 그 줄 전체가 칠해져요.<br>새 색이 이전 색을 덮어요.<br>위 그림을 따라 그려요.",
+    pic: "그림", strokes: "칠하기", par: "목표", hint: "크레용을 누르세요", win: "똑같아요!", next: "다음" },
+  zh: { name: "中文", play: "开始", cont: "继续", fresh: "重新开始",
+    desc: "点一支蜡笔，它会涂满整行或整列。<br>新颜色会盖住旧颜色。<br>照着上面的图画。",
+    pic: "图", strokes: "笔数", par: "目标", hint: "点一支蜡笔", win: "一模一样！", next: "下一关" },
+  ar: { name: "العربية", play: "العب", cont: "متابعة", fresh: "لعبة جديدة",
+    desc: "المس قلماً — سيلوّن صفه أو عموده بالكامل.<br>اللون الجديد يغطي القديم.<br>أعد رسم الصورة في الأعلى.",
+    pic: "صورة", strokes: "ضربات", par: "الهدف", hint: "المس قلماً", win: "مطابق!", next: "التالي" },
+  ru: { name: "Русский", play: "РИСОВАТЬ", cont: "ПРОДОЛЖИТЬ", fresh: "С НАЧАЛА",
+    desc: "Нажимай на мелки — каждый закрашивает свою строку или столбец.<br>Новый цвет ложится поверх старого.<br>Перерисуй картинку сверху.",
+    pic: "Рисунок", strokes: "мазков", par: "хватит", hint: "нажми на мелок", win: "ПОХОЖЕ!", next: "ДАЛЬШЕ" },
+};
+const LANGS = Object.keys(STR);
+
+let lang = null;
+function detectLang() {
+  const list = navigator.languages && navigator.languages.length
+    ? navigator.languages : [navigator.language || "en"];
+  for (const l of list) {
+    const two = String(l).slice(0, 2).toLowerCase();
+    if (STR[two]) return two;                    // берём первый знакомый
+  }
+  return "en";                                   // всё незнакомое — английский
+}
+const T = k => (STR[lang] && STR[lang][k]) || STR.en[k];
+
+/* ── сохранение: localStorage, а если его нет — просто в памяти ── */
+const mem = {};
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); }
+              catch (e) { return k in mem ? mem[k] : d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { mem[k] = v; } },
+};
+lang = store.get("cc_lang", null) || detectLang();
+let stars = store.get("cc_stars", {});          // {уровень: 1..3}
+let maxLevel = store.get("cc_level", 1);
+const totalStars = () => Object.values(stars).reduce((a, b) => a + b, 0);
+
+/* ── состояние ── */
+let level = 1, gridN = 3, grid, target, rowCol, colCol, moves, par, goal3, goal2, anim = null, running = false;
+let history = [], confetti = [], winT = 0, mode = "play", muted = store.get("cc_mute", false);
+const snap = () => grid.map(r => r.slice());
+const rnd = a => a[Math.random() * a.length | 0];
+
+function genLevel(lv) {
+  gridN = lv < 7 ? 3 : lv < 16 ? 4 : 5;
+  const pal = CKEYS.slice().sort(() => Math.random() - .5)
+    .slice(0, Math.min(3 + Math.floor((lv - 1) / 6), 5));
+  rowCol = Array.from({ length: gridN }, () => rnd(pal));
+  colCol = Array.from({ length: gridN }, () => rnd(pal));
+
+  const t = Array.from({ length: gridN }, () => Array(gridN).fill(null));
+  const order = [];
+  for (let r = 0; r < gridN; r++) order.push({ kind: "row", i: r });
+  order.sort(() => Math.random() - .5);
+  const extra = 1 + Math.floor(Math.random() * Math.min(gridN, 1 + lv / 3));
+  for (let e = 0; e < extra; e++)
+    order.push({ kind: Math.random() < .5 ? "row" : "col", i: Math.random() * gridN | 0 });
+  for (const st of order) paintInto(t, st.kind, st.i);
+
+  target = t; par = order.length;
+  // на большом поле перебрать пару ходов — нормально, поэтому запас растёт
+  goal3 = par + Math.floor(gridN / 2);
+  goal2 = goal3 + gridN;
+  grid = Array.from({ length: gridN }, () => Array(gridN).fill(null));
+  moves = 0;
+}
+function paintInto(g, kind, i) {
+  const col = kind === "row" ? rowCol[i] : colCol[i];
+  for (let j = 0; j < gridN; j++) { if (kind === "row") g[i][j] = col; else g[j][i] = col; }
+}
+const solved = () => grid.every((row, r) => row.every((c, j) => c === target[r][j]));
+
+/* ── раскладка ── */
+let L = {};
+function layout() {
+  const cell = Math.floor(Math.min((W * .84) / (gridN + 1.35), (H * .40) / (gridN + 1.35)));
+  const size = cell * gridN;
+  L = { cell, size, gx: (W - size) / 2 - cell * .55, gy: H * .40 };
+  L.tcell = Math.max(15, cell * .38);
+  L.tsize = L.tcell * gridN;
+  L.tx = (W - L.tsize) / 2; L.ty = H * .135;
+}
+
+/* ── детали ── */
+function paperTile(g, x, y, s, key, small) {
+  const c = key ? COLORS[key] : null;
+  const rot = (hash(x, y) - .5) * .07;
+  g.save(); g.translate(x + s / 2, y + s / 2); g.rotate(rot); g.translate(-s / 2, -s / 2);
+  if (c) {                                   // мягкая тень под бумажкой
+    g.globalAlpha = .10; g.fillStyle = INK;
+    wobbleRect(g, s * .07, s * .10, s * .86, s * .86, s * .16); g.fill();
+    g.globalAlpha = 1;
+  }
+  wobbleRect(g, s * .05, s * .05, s * .86, s * .86, s * .16);
+  g.fillStyle = c ? c.fill : EMPTY; g.fill();
+  g.strokeStyle = c ? INK : "rgba(59,50,41,.22)";
+  g.lineWidth = small ? 2 : 2.8; g.stroke();
+  if (c) {                                   // штриховка мелком
+    g.save(); wobbleRect(g, s * .05, s * .05, s * .86, s * .86, s * .16); g.clip();
+    g.strokeStyle = c.dark; g.globalAlpha = .30; g.lineWidth = s * .05;
+    for (let i = -s; i < s * 1.4; i += s * .17) {
+      g.beginPath(); g.moveTo(i, s); g.lineTo(i + s * .55, -s * .1); g.stroke();
+    }
+    g.restore(); g.globalAlpha = 1;
+  }
+  g.restore();
+}
+
+/* восковой мелок: гранёный корпус, бумажная обёртка, стёсанный кончик */
+function crayon(g, cx, cy, len, thick, key, vertical, dir) {
+  const c = COLORS[key];
+  g.save(); g.translate(cx, cy);
+  g.rotate(vertical ? Math.PI / 2 : 0);
+  g.scale(dir, 1);
+  g.lineJoin = "round"; g.lineCap = "round";
+  const h = thick / 2, tip = len * .26;
+
+  g.beginPath();                              // корпус с конусом
+  g.moveTo(-len / 2, -h); g.lineTo(len / 2 - tip, -h);
+  g.lineTo(len / 2, -h * .30); g.lineTo(len / 2, h * .30);
+  g.lineTo(len / 2 - tip, h); g.lineTo(-len / 2, h);
+  g.closePath();
+  g.fillStyle = c.fill; g.fill();
+  g.strokeStyle = INK; g.lineWidth = 2.8; g.stroke();
+
+  g.save(); g.beginPath();                    // бумажная обёртка
+  g.rect(-len / 2, -h, len * .56, thick); g.clip();
+  g.fillStyle = "#fdf6e8"; g.fillRect(-len / 2, -h, len * .56, thick);
+  g.strokeStyle = c.dark; g.lineWidth = thick * .13; g.globalAlpha = .8;
+  for (let i = -len / 2; i < 0; i += thick * .34) {
+    g.beginPath(); g.moveTo(i, h); g.lineTo(i + thick * .5, -h); g.stroke();
+  }
+  g.restore();
+  g.strokeStyle = INK; g.lineWidth = 2.6;
+  g.beginPath(); g.moveTo(-len / 2 + len * .56, -h); g.lineTo(-len / 2 + len * .56, h); g.stroke();
+  g.beginPath();
+  g.moveTo(-len / 2, -h); g.lineTo(-len / 2 + len * .56, -h);
+  g.lineTo(-len / 2 + len * .56, h); g.lineTo(-len / 2, h); g.closePath(); g.stroke();
+  g.restore();
+}
+
+function background() {
+  ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "rgba(140,115,80,.055)";
+  for (let y = 8; y < H; y += 22)
+    for (let x = ((y / 22) % 2 ? 11 : 0) + 8; x < W; x += 22) {
+      ctx.beginPath(); ctx.arc(x, y, 1.5, 0, 7); ctx.fill();
+    }
+}
+
+function draw() {
+  background();
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(59,50,41,.55)"; ctx.font = "600 14px system-ui";
+  ctx.fillText(T("pic") + " " + level, W / 2, L.ty - L.tcell * 1.75);
+
+  // картинка-образец в рамке
+  const pad = L.tcell * .5;
+  ctx.save();
+  ctx.globalAlpha = .09; ctx.fillStyle = INK;
+  wobbleRect(ctx, L.tx - pad + 3, L.ty - pad + 5, L.tsize + pad * 2, L.tsize + pad * 2, 10); ctx.fill();
+  ctx.globalAlpha = 1;
+  wobbleRect(ctx, L.tx - pad, L.ty - pad, L.tsize + pad * 2, L.tsize + pad * 2, 10);
+  ctx.fillStyle = "#fdf6e8"; ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.stroke();
+  ctx.restore();
+  for (let r = 0; r < gridN; r++)
+    for (let j = 0; j < gridN; j++)
+      paperTile(ctx, L.tx + j * L.tcell, L.ty + r * L.tcell, L.tcell, target[r][j], true);
+
+  for (let r = 0; r < gridN; r++)
+    for (let j = 0; j < gridN; j++)
+      paperTile(ctx, L.gx + j * L.cell, L.gy + r * L.cell, L.cell, grid[r][j]);
+
+  const cl = L.cell * .92, ct = L.cell * .34;
+  for (let r = 0; r < gridN; r++)
+    crayon(ctx, L.gx + L.size + L.cell * .70, L.gy + (r + .5) * L.cell, cl, ct, rowCol[r], false, -1);
+  for (let j = 0; j < gridN; j++)
+    crayon(ctx, L.gx + (j + .5) * L.cell, L.gy + L.size + L.cell * .70, cl, ct, colCol[j], true, -1);
+
+  if (anim) {                                 // мелок едет по линии
+    const p = Math.min(1, anim.t / anim.dur), e = p * p * (3 - 2 * p);
+    const jitter = Math.sin(anim.t / 30) * L.cell * .04;
+    if (anim.kind === "row")
+      crayon(ctx, L.gx + L.size - e * L.size + L.cell * .55,
+             L.gy + (anim.i + .5) * L.cell + jitter, cl, ct, anim.col, false, -1);
+    else
+      crayon(ctx, L.gx + (anim.i + .5) * L.cell + jitter,
+             L.gy + L.size - e * L.size + L.cell * .55, cl, ct, anim.col, true, -1);
+  }
+
+  if (level === 1 && moves === 0 && !anim) {     // подсказка новичку
+    const y = L.gy + L.cell * .5, x = L.gx + L.size + L.cell * .70;
+    const pulse = 1 + Math.sin(Date.now() / 260) * .10;
+    ctx.save(); ctx.globalAlpha = .55;
+    ctx.strokeStyle = "#c8683a"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(x, y, L.cell * .62 * pulse, L.cell * .34 * pulse, 0, 0, 7);
+    ctx.stroke(); ctx.restore();
+    ctx.fillStyle = "#c8683a"; ctx.font = "700 14px system-ui";
+    ctx.fillText(T("hint"), W / 2, L.gy - L.cell * .35);
+  }
+  ctx.fillStyle = "rgba(59,50,41,.5)"; ctx.font = "600 14px system-ui";
+  ctx.fillText(`${T("strokes")} ${moves} · ★★★ ${goal3}`, W / 2, L.gy + L.size + L.cell * 1.75);
+
+  drawBar();
+}
+const restartBtn = () => ({ x: W - 40, y: 40, r: 20 });
+function bar() {
+  const y = L.gy + L.size + L.cell * 2.35, r = Math.min(26, L.cell * .34), gap = r * 3;
+  return [
+    { id: "undo",  x: W / 2 - gap, y, r },
+    { id: "again", x: W / 2,       y, r },
+    { id: "sound", x: W / 2 + gap, y, r },
+  ];
+}
+function drawBar() {
+  for (const b of bar()) {
+    const off = b.id === "undo" && !history.length;
+    ctx.globalAlpha = off ? .35 : 1;
+    ctx.fillStyle = "#fdf6e8"; ctx.strokeStyle = INK; ctx.lineWidth = 2.8;
+    wobbleRect(ctx, b.x - b.r, b.y - b.r, b.r * 2, b.r * 2, b.r * .5);
+    ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = INK; ctx.fillStyle = INK; ctx.lineWidth = 3;
+    if (b.id === "undo") {                       // стрелка назад
+      ctx.beginPath(); ctx.arc(b.x + 2, b.y + 1, b.r * .40, 3.5, 1.4); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(b.x - b.r * .48, b.y - b.r * .34);
+      ctx.lineTo(b.x - b.r * .10, b.y - b.r * .30);
+      ctx.lineTo(b.x - b.r * .34, b.y + b.r * .06);
+      ctx.closePath(); ctx.fill();
+    } else if (b.id === "again") {               // круговая стрелка
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r * .40, .6, 5.2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(b.x + b.r * .40, b.y - b.r * .42);
+      ctx.lineTo(b.x + b.r * .10, b.y - b.r * .14);
+      ctx.lineTo(b.x + b.r * .54, b.y - b.r * .04);
+      ctx.closePath(); ctx.fill();
+    } else {                                     // динамик
+      ctx.beginPath();
+      ctx.moveTo(b.x - b.r * .40, b.y - b.r * .16);
+      ctx.lineTo(b.x - b.r * .16, b.y - b.r * .16);
+      ctx.lineTo(b.x + b.r * .06, b.y - b.r * .44);
+      ctx.lineTo(b.x + b.r * .06, b.y + b.r * .44);
+      ctx.lineTo(b.x - b.r * .16, b.y + b.r * .16);
+      ctx.lineTo(b.x - b.r * .40, b.y + b.r * .16);
+      ctx.closePath(); ctx.fill();
+      ctx.lineWidth = 2.6;
+      if (muted) {
+        ctx.beginPath();
+        ctx.moveTo(b.x + b.r * .22, b.y - b.r * .22);
+        ctx.lineTo(b.x + b.r * .56, b.y + b.r * .22);
+        ctx.moveTo(b.x + b.r * .56, b.y - b.r * .22);
+        ctx.lineTo(b.x + b.r * .22, b.y + b.r * .22);
+        ctx.stroke();
+      } else {
+        ctx.beginPath(); ctx.arc(b.x + b.r * .10, b.y, b.r * .34, -.9, .9); ctx.stroke();
+        ctx.beginPath(); ctx.arc(b.x + b.r * .10, b.y, b.r * .58, -.8, .8); ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ── ход ── */
+function stroke(kind, i) {
+  if (anim || !running || mode !== "play") return;
+  history.push(snap());
+  if (history.length > 40) history.shift();
+  anim = { kind, i, col: kind === "row" ? rowCol[i] : colCol[i], t: 0, dur: 400, painted: 0 };
+  SFX.draw();
+}
+function undo() {
+  if (!history.length || anim || mode !== "play") return;
+  grid = history.pop(); moves = Math.max(0, moves - 1);
+  beep(300, .09, "triangle", .04, -80);
+}
+
+function win() {
+  running = false; mode = "win"; winT = 0; SFX.win();
+  const s2 = moves <= goal3 ? 3 : moves <= goal2 ? 2 : 1;
+  if ((stars[level] || 0) < s2) { stars[level] = s2; store.set("cc_stars", stars); }
+  if (level + 1 > maxLevel) { maxLevel = level + 1; store.set("cc_level", maxLevel); }
+  for (let i = 0; i < 90; i++) {                 // конфетти
+    confetti.push({ x: W / 2 + rnd2(-W * .3, W * .3), y: H * .34 + rnd2(-30, 30),
+      vx: rnd2(-3.4, 3.4), vy: rnd2(-9, -2), rot: rnd2(0, 6.3), rv: rnd2(-.25, .25),
+      s: rnd2(6, 13), col: COLORS[CKEYS[Math.random() * CKEYS.length | 0]].fill, life: 1 });
+  }
+}
+const rnd2 = (a, b) => a + Math.random() * (b - a);
+
+/* Раскладка окна победы считается от размера поля: на 5×5 рисунок
+   крупнее, и карточка должна вырасти вместе с ним. */
+function winLayout() {
+  const cw = Math.min(W * .86, 420);
+  const tc = Math.min(46, (cw - 70) / gridN);
+  const tsz = tc * gridN;
+  const padT = 30, titleH = 30, gap1 = 16, gap2 = 30, starH = 40,
+        gap3 = 26, textH = 18, gap4 = 22, btnH = 50, padB = 26;
+  const ch = padT + titleH + gap1 + tsz + gap2 + starH + gap3 + textH + gap4 + btnH + padB;
+  const cx = (W - cw) / 2, cy = (H - ch) / 2;
+  const ty = cy + padT + titleH + gap1;
+  const sy = ty + tsz + gap2 + starH / 2;
+  return {
+    cw, ch, cx, cy, tc, tsz, tx: W / 2 - tsz / 2, ty, sy,
+    titleY: cy + padT + titleH * .78,
+    textY: sy + starH / 2 + gap3 + textH * .7,
+    btn: { x: W / 2, y: cy + ch - padB - btnH / 2, w: Math.min(190, cw - 80), h: btnH },
+  };
+}
+
+function drawWin() {
+  ctx.fillStyle = "rgba(247,239,225,.90)"; ctx.fillRect(0, 0, W, H);
+  const s2 = stars[level] || 1, K = winLayout();
+  const pop = Math.min(1, winT / 260), e = 1 - Math.pow(1 - pop, 3);
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(.84 + e * .16, .84 + e * .16);
+  ctx.translate(-W / 2, -H / 2);
+
+  ctx.globalAlpha = .10; ctx.fillStyle = INK;
+  wobbleRect(ctx, K.cx + 4, K.cy + 7, K.cw, K.ch, 18); ctx.fill(); ctx.globalAlpha = 1;
+  wobbleRect(ctx, K.cx, K.cy, K.cw, K.ch, 18);
+  ctx.fillStyle = "#fdf6e8"; ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 3.4; ctx.stroke();
+
+  ctx.textAlign = "center"; ctx.fillStyle = INK;
+  ctx.font = "800 25px system-ui";
+  ctx.fillText(T("win"), W / 2, K.titleY);
+
+  for (let r = 0; r < gridN; r++)
+    for (let j = 0; j < gridN; j++)
+      paperTile(ctx, K.tx + j * K.tc, K.ty + r * K.tc, K.tc, target[r][j], true);
+
+  for (let i = 0; i < 3; i++)
+    star(ctx, W / 2 + (i - 1) * 42, K.sy, 18, i < s2 && winT > 260 + i * 160);
+
+  ctx.fillStyle = "rgba(59,50,41,.6)"; ctx.font = "600 14px system-ui";
+  ctx.fillText(`${T("strokes")} ${moves} · ★★★ ${goal3}`, W / 2, K.textY);
+
+  const b = K.btn;
+  wobbleRect(ctx, b.x - b.w / 2, b.y - b.h / 2, b.w, b.h, 15);
+  ctx.fillStyle = "#c8683a"; ctx.fill();
+  ctx.strokeStyle = INK; ctx.lineWidth = 3.2; ctx.stroke();
+  ctx.fillStyle = "#fff8ec"; ctx.font = "800 17px system-ui";
+  ctx.fillText(T("next"), b.x, b.y + 6);
+  ctx.restore();
+
+  for (const c of confetti) {
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.rot);
+    ctx.globalAlpha = Math.max(0, Math.min(1, c.life));
+    ctx.fillStyle = c.col; ctx.fillRect(-c.s / 2, -c.s / 4, c.s, c.s / 2);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function star(g, x, y, r, on) {
+  g.save(); g.translate(x, y);
+  g.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * .46 : r;
+    g[i ? "lineTo" : "moveTo"](Math.cos(a) * rr, Math.sin(a) * rr);
+  }
+  g.closePath();
+  g.fillStyle = on ? "#e8b13c" : "rgba(59,50,41,.10)"; g.fill();
+  g.strokeStyle = INK; g.lineWidth = 2.4; g.stroke();
+  g.restore();
+}
+
+/* ── ввод ── */
+cv.addEventListener("pointerdown", e => {
+  audio();
+  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+
+  if (mode === "win") {                          // на экране победы — только «дальше»
+    if (winT > 400) { level++; play(); }
+    return;
+  }
+  for (const b of bar()) {
+    if (Math.abs(px - b.x) < b.r + 6 && Math.abs(py - b.y) < b.r + 6) {
+      if (b.id === "undo") undo();
+      else if (b.id === "again") { genLevel(level); history = []; layout(); }
+      else { muted = !muted; store.set("cc_mute", muted); if (!muted) beep(660, .1, "triangle", .05); }
+      return;
+    }
+  }
+  if (!running || anim) return;
+  const rx = L.gx + L.size + L.cell * .70;
+  for (let i = 0; i < gridN; i++)
+    if (Math.abs(px - rx) < L.cell * .62 && Math.abs(py - (L.gy + (i + .5) * L.cell)) < L.cell * .5)
+      return stroke("row", i);
+  const cy = L.gy + L.size + L.cell * .70;
+  for (let i = 0; i < gridN; i++)
+    if (Math.abs(py - cy) < L.cell * .62 && Math.abs(px - (L.gx + (i + .5) * L.cell)) < L.cell * .5)
+      return stroke("col", i);
+});
+
+/* ── цикл ── */
+let last = 0;
+requestAnimationFrame(function loop(now) {
+  requestAnimationFrame(loop);
+  const dt = Math.min(34, now - last); last = now;
+  if (anim) {
+    anim.t += dt;
+    const cells = Math.floor(Math.min(1, anim.t / anim.dur) * gridN);
+    while (anim.painted < cells) {
+      const j = gridN - 1 - anim.painted;
+      if (anim.kind === "row") grid[anim.i][j] = anim.col; else grid[j][anim.i] = anim.col;
+      anim.painted++; SFX.tile();
+    }
+    if (anim.t >= anim.dur) { moves++; anim = null; if (solved()) win(); }
+  }
+  if (mode === "win") {
+    winT += dt;
+    for (const c of confetti) {
+      c.x += c.vx * dt / 16.67; c.y += c.vy * dt / 16.67;
+      c.vy += .34 * dt / 16.67; c.rot += c.rv * dt / 16.67;
+      if (c.y > H * .78) c.life -= dt / 700;
+    }
+    confetti = confetti.filter(c => c.life > 0 && c.y < H + 60);
+  }
+  if (grid) { draw(); if (mode === "win") drawWin(); }
+});
+
+function play() {
+  document.getElementById("start").classList.add("hidden");
+  mode = "play"; history = []; confetti = [];
+  genLevel(level); layout(); running = true;
+}
+document.getElementById("btnPlay").onclick = () => { audio(); level = maxLevel; play(); };
+document.getElementById("btnNew").onclick = () => {
+  audio(); level = 1; maxLevel = 1; stars = {};
+  store.set("cc_level", 1); store.set("cc_stars", {}); play();
+};
+function refreshStart() {
+  document.getElementById("desc").innerHTML = T("desc");
+  document.getElementById("btnPlay").textContent = maxLevel > 1 ? T("cont") : T("play");
+  document.getElementById("btnNew").textContent = T("fresh");
+  document.getElementById("btnNew").style.display = maxLevel > 1 ? "" : "none";
+  document.getElementById("totalStars").textContent =
+    totalStars() ? "★ " + totalStars() + " · " + T("pic") + " " + maxLevel : "";
+  document.getElementById("langBtn").textContent = STR[lang].name;
+  document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
+}
+const langBox = document.getElementById("langBox");
+const langList = document.getElementById("langList");
+LANGS.forEach(code => {
+  const b = document.createElement("button");
+  b.textContent = STR[code].name;
+  b.dataset.code = code;
+  b.style.cssText = "background:#fdf6e8;border:2.5px solid #3b3229;border-radius:11px;" +
+    "padding:9px 12px;font:700 13px/1 inherit;color:#3b3229;cursor:pointer";
+  b.onclick = () => {
+    lang = code; store.set("cc_lang", code);
+    document.documentElement.lang = code;
+    document.documentElement.dir = code === "ar" ? "rtl" : "ltr";
+    langBox.classList.add("hidden"); refreshStart(); markLang();
+  };
+  langList.appendChild(b);
+});
+function markLang() {
+  for (const b of langList.children) {
+    const on = b.dataset.code === lang;
+    b.style.background = on ? "#c8683a" : "#fdf6e8";
+    b.style.color = on ? "#fff8ec" : "#3b3229";
+  }
+}
+markLang();
+document.getElementById("langBtn").onclick = () => { markLang(); langBox.classList.remove("hidden"); };
+langBox.onclick = e => { if (e.target === langBox || e.target.id === "langTitle") langBox.classList.add("hidden"); };
+refreshStart();
+document.getElementById("verTag").textContent = "v" + VERSION;
+genLevel(1); resize();
+</script>
+</body>
+</html>
