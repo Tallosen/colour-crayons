@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<script src="https://bridge.playgama.com/v2/stable/playgama-bridge.js"></script>
 <title>Colour Crayons — Vacky Games</title>
 <meta name="description" content="Tap a crayon to paint a whole row or column and redraw the picture.">
 <style>
@@ -11,7 +12,7 @@
     font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#3b3229}
   canvas{display:block;touch-action:none}
   .ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
-    justify-content:center;gap:16px;background:rgba(247,239,225,.95);z-index:9;text-align:center;padding:24px}
+    justify-content:center;gap:16px;background:#f7efe1;z-index:9;text-align:center;padding:24px}
   .hidden{display:none}
   #langBox{z-index:20;background:#f7efe1}
   h1{font-size:29px;letter-spacing:.02em;color:#c8683a}
@@ -26,7 +27,10 @@
 <canvas id="c"></canvas>
 
 <div id="langBox" class="ov hidden">
-  <h2 id="langTitle" style="font-size:19px;margin-bottom:4px">Language</h2>
+  <button id="langClose" style="position:fixed;top:14px;right:14px;width:44px;height:44px;
+    border:2.5px solid #3b3229;border-radius:12px;background:#fdf6e8;color:#3b3229;
+    font:700 20px/1 inherit;cursor:pointer">✕</button>
+  <h2 id="langTitle" style="font-size:19px;margin-bottom:4px">🌐 Language</h2>
   <div id="langList" style="display:flex;flex-wrap:wrap;gap:9px;justify-content:center;
     align-content:center;max-width:340px"></div>
 </div>
@@ -47,7 +51,7 @@
 
 <script>
 "use strict";
-const VERSION = "1.6";
+const VERSION = "3.0";
 
 /* ══════════════════════════════════════════════════════════════
    Colour Crayons — механика простая: мелок красит целую линию,
@@ -70,11 +74,11 @@ addEventListener("resize", resize);
 
 /* тёплая палитра под фирменный стиль канала */
 const COLORS = {
-  terracotta: { fill: "#e0714a", dark: "#b4502e" },
-  mustard:    { fill: "#e8b13c", dark: "#bd8619" },
-  teal:       { fill: "#4f9a90", dark: "#357168" },
-  plum:       { fill: "#9c5f8e", dark: "#77436c" },
-  sage:       { fill: "#8aa86a", dark: "#66834a" },
+  terracotta: { fill: "#e0714a", dark: "#b4502e", note: 262 },
+  mustard:    { fill: "#e8b13c", dark: "#bd8619", note: 294 },
+  teal:       { fill: "#4f9a90", dark: "#357168", note: 330 },
+  plum:       { fill: "#9c5f8e", dark: "#77436c", note: 392 },
+  sage:       { fill: "#8aa86a", dark: "#66834a", note: 440 },
 };
 const CKEYS = Object.keys(COLORS);
 const INK = "#3b3229", PAPER = "#f7efe1", EMPTY = "#ece0cd", WOOD = "#c9a06a";
@@ -100,7 +104,7 @@ function wobbleRect(g, x, y, w, h, r) {
 let AC = null;
 const audio = () => AC || (AC = new (window.AudioContext || webkitAudioContext)());
 function beep(f, d, ty = "sine", v = .05, sl = 0) {
-  if (muted) return;
+  if (muted || hostMuted) return;
   try {
     const a = audio(), o = a.createOscillator(), g = a.createGain();
     o.type = ty; o.frequency.setValueAtTime(f, a.currentTime);
@@ -112,7 +116,8 @@ function beep(f, d, ty = "sine", v = .05, sl = 0) {
 }
 const SFX = {
   draw: () => beep(240, .26, "sawtooth", .022, 90),
-  tile: () => beep(520 + Math.random() * 160, .05, "triangle", .022, 90),
+  tile: (key, i) => beep((COLORS[key] ? COLORS[key].note : 520) * (1 + i * .06),
+                         .13, "triangle", .028),
   win:  () => [523, 659, 784, 1047].forEach((n, i) => setTimeout(() => beep(n, .17, "triangle", .055), i * 95)),
 };
 
@@ -170,49 +175,153 @@ const LANGS = Object.keys(STR);
 let lang = null;
 const T = k => (STR[lang] && STR[lang][k]) || STR.en[k];
 
-/* ── сохранение: localStorage, а если его нет — просто в памяти ── */
-const mem = {};
+/* ── сохранение ────────────────────────────────────────────────
+   Платформы запрещают localStorage: данные должны идти через
+   Storage модуль Bridge, иначе не попадут в облачные сохранения.
+   Локально Bridge работает в режиме заглушки, поэтому оставляем
+   запасной путь — тогда игра остаётся играбельной и на своём сайте. */
+const SDK = typeof bridge !== "undefined" ? bridge : null;
+const KEYS = ["cc_level", "cc_stars", "cc_mute", "cc_lang"];
+const cache = {};
+
 const store = {
-  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); }
-              catch (e) { return k in mem ? mem[k] : d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { mem[k] = v; } },
+  get(k, d) { return k in cache && cache[k] !== null ? cache[k] : d; },
+  set(k, v) {
+    cache[k] = v;
+    if (SDK) SDK.storage.set([k], [JSON.stringify(v)]).catch(() => {});
+    else { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  },
 };
-// английский по умолчанию для всех: витрина англоязычная,
-// а язык переключается вручную и запоминается
-lang = store.get("cc_lang", null) || "en";
-let stars = store.get("cc_stars", {});          // {уровень: 1..3}
-let maxLevel = store.get("cc_level", 1);
-const totalStars = () => Object.values(stars).reduce((a, b) => a + b, 0);
+function parse(v, d) {
+  if (v === null || v === undefined) return d;
+  try { return JSON.parse(v); } catch (e) { return d; }
+}
+function loadLocal() {
+  KEYS.forEach(k => {
+    try { cache[k] = parse(localStorage.getItem(k), null); } catch (e) { cache[k] = null; }
+  });
+}
+function loadSave() {                            // на промисах, а не на современном синтаксисе:
+  if (!SDK) { loadLocal(); return Promise.resolve(); }   // нужен старым Safari
+  return SDK.storage.get(KEYS)
+    .then(data => { KEYS.forEach((k, i) => { cache[k] = parse(data[i], null); }); })
+    .catch(() => loadLocal());
+}
 
 /* ── состояние ── */
-let level = 1, gridN = 3, grid, target, rowCol, colCol, moves, par, goal3, goal2, anim = null, running = false;
-let history = [], confetti = [], winT = 0, mode = "play", muted = store.get("cc_mute", false);
+let level = 1, gridN = 3, grid, target, rowCol, colCol, rowHalf, colHalf, moves, par, goal3, goal2, anim = null, running = false;
+let stars = {}, maxLevel = 1;                   // подтягиваются из сохранения при загрузке
+const totalStars = () => Object.values(stars).reduce((a, b) => a + b, 0);
+let history = [], confetti = [], winT = 0, mode = "play", muted = false;
+let hostMuted = false, hostPaused = false, cleared = 0;
+let resume = null;              // недоигранный уровень, чтобы выход в меню его не терял
 const snap = () => grid.map(r => r.slice());
 const rnd = a => a[Math.random() * a.length | 0];
+
+/* Разбираем узор обратно: снимаем мазок, если все его ещё не снятые
+   клетки одного цвета. Если удалось снять всё — уровень проходим.
+   Проверка честная, с перебором, поэтому нерешаемых уровней быть не может. */
+function isSolvable(t, n, rc, cc, rh, ch) {
+  const span = (kind, i) => ((kind === "row" ? rh[i] : ch[i]) ? n - Math.ceil(n / 2) : 0);
+  const cur = t.map(r => r.slice());
+  const used = {};
+  function peel() {
+    let done = true;
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (cur[r][c] !== null) done = false;
+    if (done) return true;
+    for (const kind of ["row", "col"]) {
+      for (let i = 0; i < n; i++) {
+        const id = kind + i;
+        if (used[id]) continue;
+        const col = kind === "row" ? rc[i] : cc[i];
+        const from = span(kind, i);
+        let ok = true, any = false;
+        const pts = [];
+        for (let j = from; j < n; j++) {
+          const r = kind === "row" ? i : j, c = kind === "row" ? j : i;
+          pts.push([r, c]);
+          if (cur[r][c] === null) continue;
+          any = true;
+          if (cur[r][c] !== col) { ok = false; break; }
+        }
+        if (!ok || !any) continue;
+        const saved = pts.map(([r, c]) => cur[r][c]);
+        pts.forEach(([r, c]) => { cur[r][c] = null; });
+        used[id] = 1;
+        if (peel()) return true;
+        used[id] = 0;
+        pts.forEach(([r, c], k) => { cur[r][c] = saved[k]; });
+      }
+    }
+    return false;
+  }
+  return peel();
+}
 
 function genLevel(lv) {
   gridN = lv < 7 ? 3 : lv < 16 ? 4 : 5;
   const pal = CKEYS.slice().sort(() => Math.random() - .5)
     .slice(0, Math.min(3 + Math.floor((lv - 1) / 6), 5));
-  rowCol = Array.from({ length: gridN }, () => rnd(pal));
-  colCol = Array.from({ length: gridN }, () => rnd(pal));
 
+  /* Уровень собирается обратным ходом: сначала все строки, потом
+     несколько столбцов. Столбцы кладём последними — иначе строка
+     затирает их след, и получается узор из одних полос, который
+     решается тривиально. После сборки ещё и проверяем результат. */
+  for (let attempt = 0; attempt < 400; attempt++) {
+    rowCol = Array.from({ length: gridN }, () => rnd(pal));
+    colCol = Array.from({ length: gridN }, () => rnd(pal));
+    // короткие мелки появляются с 10 уровня и постепенно становятся обычнее
+    const halfChance = lv < 10 ? 0 : Math.min(.34, (lv - 9) * .045);
+    rowHalf = Array.from({ length: gridN }, () => Math.random() < halfChance);
+    colHalf = Array.from({ length: gridN }, () => Math.random() < halfChance);
+
+    const t = Array.from({ length: gridN }, () => Array(gridN).fill(null));
+    const order = [];
+    for (let r = 0; r < gridN; r++) order.push({ kind: "row", i: r });
+    order.sort(() => Math.random() - .5);
+
+    const maxCols = gridN - 1;
+    const want = Math.max(1, Math.min(maxCols, 1 + Math.floor(lv / 7)));
+    const cols = Array.from({ length: gridN }, (_, i) => i).sort(() => Math.random() - .5).slice(0, want);
+    for (const c of cols) order.push({ kind: "col", i: c });
+
+    for (const st of order) paintInto(t, st.kind, st.i);
+
+    /* Узор тривиален только если решается ОДНИМИ строками (все строки
+       одноцветные) или ОДНИМИ столбцами. То, что последние столбцы
+       вышли ровными, — норма: они и клались последними. */
+    let plainRows = 0, plainCols = 0, empty = 0;
+    for (let r = 0; r < gridN; r++) {
+      if (t[r].every(c => c === t[r][0])) plainRows++;
+      for (let c = 0; c < gridN; c++) if (t[r][c] === null) empty++;
+    }
+    for (let c = 0; c < gridN; c++)
+      if (t.every(row => row[c] === t[0][c])) plainCols++;
+
+    if (empty) continue;                              // короткий мелок оставил дыру
+    if (plainRows === gridN) continue;                // решается одними строками
+    if (plainCols === gridN) continue;                // решается одними столбцами
+    if (new Set([].concat.apply([], t)).size < 2) continue;
+    if (!isSolvable(t, gridN, rowCol, colCol, rowHalf, colHalf)) continue;   // главный фильтр
+
+    target = t; par = order.length;
+    goal3 = par + Math.floor(gridN / 2);
+    goal2 = goal3 + gridN;
+    grid = Array.from({ length: gridN }, () => Array(gridN).fill(null));
+    moves = 0;
+    return;
+  }
+  // запасной вариант, если за 400 попыток не сложилось
+  rowHalf = Array(gridN).fill(false); colHalf = Array(gridN).fill(false);
   const t = Array.from({ length: gridN }, () => Array(gridN).fill(null));
-  const order = [];
-  for (let r = 0; r < gridN; r++) order.push({ kind: "row", i: r });
-  order.sort(() => Math.random() - .5);
-  const extra = 1 + Math.floor(Math.random() * Math.min(gridN, 1 + lv / 3));
-  for (let e = 0; e < extra; e++)
-    order.push({ kind: Math.random() < .5 ? "row" : "col", i: Math.random() * gridN | 0 });
-  for (const st of order) paintInto(t, st.kind, st.i);
-
-  target = t; par = order.length;
-  // на большом поле перебрать пару ходов — нормально, поэтому запас растёт
-  goal3 = par + Math.floor(gridN / 2);
-  goal2 = goal3 + gridN;
+  for (let r = 0; r < gridN; r++) paintInto(t, "row", r);
+  paintInto(t, "col", 0); paintInto(t, "col", gridN - 1);
+  target = t; par = gridN + 2;
+  goal3 = par + Math.floor(gridN / 2); goal2 = goal3 + gridN;
   grid = Array.from({ length: gridN }, () => Array(gridN).fill(null));
   moves = 0;
 }
+
 function paintInto(g, kind, i) {
   const col = kind === "row" ? rowCol[i] : colCol[i];
   for (let j = 0; j < gridN; j++) { if (kind === "row") g[i][j] = col; else g[j][i] = col; }
@@ -323,19 +432,21 @@ function draw() {
 
   const cl = L.cell * .92, ct = L.cell * .34;
   for (let r = 0; r < gridN; r++)
-    crayon(ctx, L.gx + L.size + L.cell * .70, L.gy + (r + .5) * L.cell, cl, ct, rowCol[r], false, -1);
+    crayon(ctx, L.gx + L.size + L.cell * (rowHalf[r] ? .58 : .70), L.gy + (r + .5) * L.cell,
+           rowHalf[r] ? cl * .58 : cl, ct, rowCol[r], false, -1);
   for (let j = 0; j < gridN; j++)
-    crayon(ctx, L.gx + (j + .5) * L.cell, L.gy + L.size + L.cell * .70, cl, ct, colCol[j], true, -1);
+    crayon(ctx, L.gx + (j + .5) * L.cell, L.gy + L.size + L.cell * (colHalf[j] ? .58 : .70),
+           colHalf[j] ? cl * .58 : cl, ct, colCol[j], true, -1);
 
   if (anim) {                                 // мелок едет по линии
     const p = Math.min(1, anim.t / anim.dur), e = p * p * (3 - 2 * p);
     const jitter = Math.sin(anim.t / 30) * L.cell * .04;
     if (anim.kind === "row")
-      crayon(ctx, L.gx + L.size - e * L.size + L.cell * .55,
+      crayon(ctx, L.gx + L.size - e * L.size * (anim.half ? .5 : 1) + L.cell * .55,
              L.gy + (anim.i + .5) * L.cell + jitter, cl, ct, anim.col, false, -1);
     else
       crayon(ctx, L.gx + (anim.i + .5) * L.cell + jitter,
-             L.gy + L.size - e * L.size + L.cell * .55, cl, ct, anim.col, true, -1);
+             L.gy + L.size - e * L.size * (anim.half ? .5 : 1) + L.cell * .55, cl, ct, anim.col, true, -1);
   }
 
   if (level === 1 && moves === 0 && !anim) {     // подсказка новичку
@@ -355,11 +466,12 @@ function draw() {
 }
 const restartBtn = () => ({ x: W - 40, y: 40, r: 20 });
 function bar() {
-  const y = L.gy + L.size + L.cell * 2.35, r = Math.min(26, L.cell * .34), gap = r * 3;
+  const y = L.gy + L.size + L.cell * 2.35, r = Math.min(26, L.cell * .32), gap = r * 2.7;
   return [
-    { id: "undo",  x: W / 2 - gap, y, r },
-    { id: "again", x: W / 2,       y, r },
-    { id: "sound", x: W / 2 + gap, y, r },
+    { id: "home",  x: W / 2 - gap * 1.5, y, r },
+    { id: "undo",  x: W / 2 - gap * .5,  y, r },
+    { id: "again", x: W / 2 + gap * .5,  y, r },
+    { id: "sound", x: W / 2 + gap * 1.5, y, r },
   ];
 }
 function drawBar() {
@@ -370,7 +482,22 @@ function drawBar() {
     wobbleRect(ctx, b.x - b.r, b.y - b.r, b.r * 2, b.r * 2, b.r * .5);
     ctx.fill(); ctx.stroke();
     ctx.strokeStyle = INK; ctx.fillStyle = INK; ctx.lineWidth = 3;
-    if (b.id === "undo") {                       // стрелка назад
+    if (b.id === "home") {                       // домик
+      ctx.lineWidth = 2.8; ctx.strokeStyle = INK;
+      ctx.beginPath();
+      ctx.moveTo(b.x - b.r * .52, b.y - b.r * .02);
+      ctx.lineTo(b.x, b.y - b.r * .52);
+      ctx.lineTo(b.x + b.r * .52, b.y - b.r * .02);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(b.x - b.r * .36, b.y - b.r * .06);
+      ctx.lineTo(b.x - b.r * .36, b.y + b.r * .48);
+      ctx.lineTo(b.x + b.r * .36, b.y + b.r * .48);
+      ctx.lineTo(b.x + b.r * .36, b.y - b.r * .06);
+      ctx.stroke();
+      ctx.fillStyle = INK;
+      ctx.fillRect(b.x - b.r * .12, b.y + b.r * .14, b.r * .24, b.r * .34);
+    } else if (b.id === "undo") {                // стрелка назад
       ctx.beginPath(); ctx.arc(b.x + 2, b.y + 1, b.r * .40, 3.5, 1.4); ctx.stroke();
       ctx.beginPath();
       ctx.moveTo(b.x - b.r * .48, b.y - b.r * .34);
@@ -415,7 +542,9 @@ function stroke(kind, i) {
   if (anim || !running || mode !== "play") return;
   history.push(snap());
   if (history.length > 40) history.shift();
-  anim = { kind, i, col: kind === "row" ? rowCol[i] : colCol[i], t: 0, dur: 400, painted: 0 };
+  anim = { kind, i, t: 0, dur: 400, painted: 0,
+           col: kind === "row" ? rowCol[i] : colCol[i],
+           half: kind === "row" ? rowHalf[i] : colHalf[i] };
   SFX.draw();
 }
 function undo() {
@@ -426,6 +555,7 @@ function undo() {
 
 function win() {
   running = false; mode = "win"; winT = 0; SFX.win();
+  if (SDK) try { SDK.platform.sendMessage("level_completed", { level: String(level) }); } catch (e) {}
   const s2 = moves <= goal3 ? 3 : moves <= goal2 ? 2 : 1;
   if ((stars[level] || 0) < s2) { stars[level] = s2; store.set("cc_stars", stars); }
   if (level + 1 > maxLevel) { maxLevel = level + 1; store.set("cc_level", maxLevel); }
@@ -520,12 +650,13 @@ cv.addEventListener("pointerdown", e => {
   const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
 
   if (mode === "win") {                          // на экране победы — только «дальше»
-    if (winT > 400) { level++; play(); }
+    if (winT > 400) { level++; nextLevel(); }
     return;
   }
   for (const b of bar()) {
     if (Math.abs(px - b.x) < b.r + 6 && Math.abs(py - b.y) < b.r + 6) {
-      if (b.id === "undo") undo();
+      if (b.id === "home") goHome();
+      else if (b.id === "undo") undo();
       else if (b.id === "again") { genLevel(level); history = []; layout(); }
       else { muted = !muted; store.set("cc_mute", muted); if (!muted) beep(660, .1, "triangle", .05); }
       return;
@@ -547,13 +678,16 @@ let last = 0;
 requestAnimationFrame(function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(34, now - last); last = now;
+  if (!grid) return;
+  if (hostPaused) { if (grid) { draw(); if (mode === "win") drawWin(); } return; }
   if (anim) {
     anim.t += dt;
-    const cells = Math.floor(Math.min(1, anim.t / anim.dur) * gridN);
+    const span = anim.half ? Math.ceil(gridN / 2) : gridN;
+    const cells = Math.floor(Math.min(1, anim.t / anim.dur) * span);
     while (anim.painted < cells) {
       const j = gridN - 1 - anim.painted;
       if (anim.kind === "row") grid[anim.i][j] = anim.col; else grid[j][anim.i] = anim.col;
-      anim.painted++; SFX.tile();
+      anim.painted++; SFX.tile(anim.col, anim.painted - 1);
     }
     if (anim.t >= anim.dur) { moves++; anim = null; if (solved()) win(); }
   }
@@ -569,16 +703,49 @@ requestAnimationFrame(function loop(now) {
   if (grid) { draw(); if (mode === "win") drawWin(); }
 });
 
-function play() {
-  document.getElementById("start").classList.add("hidden");
-  mode = "play"; history = []; confetti = [];
-  genLevel(level); layout(); running = true;
+function goHome() {                              // возврат в меню без потери прогресса
+  if (running && mode === "play") {              // запоминаем недоигранный уровень
+    resume = {
+      level, gridN, moves, par, goal3, goal2,
+      grid: grid.map(r => r.slice()),
+      target: target.map(r => r.slice()),
+      rowCol: rowCol.slice(), colCol: colCol.slice(),
+      rowHalf: rowHalf.slice(), colHalf: colHalf.slice(),
+      history: history.map(g => g.map(r => r.slice())),
+    };
+  }
+  running = false; mode = "play"; anim = null; confetti = [];
+  refreshStart();
+  document.getElementById("start").classList.remove("hidden");
 }
-document.getElementById("btnPlay").onclick = () => { audio(); level = maxLevel; play(); };
-document.getElementById("btnNew").onclick = () => {
-  audio(); level = 1; maxLevel = 1; stars = {};
-  store.set("cc_level", 1); store.set("cc_stars", {}); play();
-};
+
+const ADS_EVERY = 15;                            // реклама раз в 15 уровней
+function nextLevel() {
+  cleared++;
+  if (SDK && cleared % ADS_EVERY === 0) {
+    try { SDK.advertisement.showInterstitial("level_completed"); } catch (e) {}
+  }
+  play();
+}
+
+function play(keep) {
+  document.getElementById("start").classList.add("hidden");
+  mode = "play"; confetti = []; anim = null;
+  if (keep && resume && resume.level === level) {   // продолжаем с того же места
+    ({ gridN, moves, par, goal3, goal2 } = resume);
+    grid = resume.grid.map(r => r.slice());
+    target = resume.target.map(r => r.slice());
+    rowCol = resume.rowCol.slice(); colCol = resume.colCol.slice();
+    rowHalf = resume.rowHalf.slice(); colHalf = resume.colHalf.slice();
+    history = resume.history.map(g => g.map(r => r.slice()));
+  } else {
+    history = [];
+    genLevel(level);
+  }
+  resume = null;
+  layout(); running = true;
+  if (SDK) try { SDK.platform.sendMessage("level_started", { level: String(level) }); } catch (e) {}
+}
 function refreshStart() {
   document.getElementById("desc").innerHTML = T("desc");
   document.getElementById("btnPlay").textContent = maxLevel > 1 ? T("cont") : T("play");
@@ -586,25 +753,38 @@ function refreshStart() {
   document.getElementById("btnNew").style.display = maxLevel > 1 ? "" : "none";
   document.getElementById("totalStars").textContent =
     totalStars() ? "★ " + totalStars() + " · " + T("pic") + " " + maxLevel : "";
-  document.getElementById("langBtn").textContent = STR[lang].name;
+  document.getElementById("langBtn").textContent = "\uD83C\uDF10 " + STR[lang].name;
   document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
 }
+document.getElementById("btnPlay").onclick = () => {
+  audio();
+  level = resume ? resume.level : maxLevel;
+  play(true);
+};
+document.getElementById("btnNew").onclick = () => {
+  audio(); level = 1; maxLevel = 1; stars = {}; resume = null;
+  store.set("cc_level", 1); store.set("cc_stars", {}); play();
+};
+document.getElementById("verTag").textContent = "v" + VERSION;
+
+/* ── выбор языка ── */
 const langBox = document.getElementById("langBox");
 const langList = document.getElementById("langList");
-LANGS.forEach(code => {
-  const b = document.createElement("button");
-  b.textContent = STR[code].name;
-  b.dataset.code = code;
-  b.style.cssText = "background:#fdf6e8;border:2.5px solid #3b3229;border-radius:11px;" +
-    "padding:9px 12px;font:700 13px/1 inherit;color:#3b3229;cursor:pointer";
-  b.onclick = () => {
-    lang = code; store.set("cc_lang", code);
-    document.documentElement.lang = code;
-    document.documentElement.dir = code === "ar" ? "rtl" : "ltr";
-    langBox.classList.add("hidden"); refreshStart(); markLang();
-  };
-  langList.appendChild(b);
-});
+function buildLangList() {
+  LANGS.forEach(code => {
+    const b = document.createElement("button");
+    b.textContent = STR[code].name;
+    b.dataset.code = code;
+    b.style.cssText = "background:#fdf6e8;border:2.5px solid #3b3229;border-radius:11px;" +
+      "padding:9px 12px;font:700 13px/1 inherit;color:#3b3229;cursor:pointer";
+    b.onclick = () => {
+      lang = code; store.set("cc_lang", code);
+      document.documentElement.lang = code;
+      langBox.classList.add("hidden"); refreshStart(); markLang();
+    };
+    langList.appendChild(b);
+  });
+}
 function markLang() {
   for (const b of langList.children) {
     const on = b.dataset.code === lang;
@@ -612,12 +792,58 @@ function markLang() {
     b.style.color = on ? "#fff8ec" : "#3b3229";
   }
 }
-markLang();
 document.getElementById("langBtn").onclick = () => { markLang(); langBox.classList.remove("hidden"); };
-langBox.onclick = e => { if (e.target === langBox || e.target.id === "langTitle") langBox.classList.add("hidden"); };
-refreshStart();
-document.getElementById("verTag").textContent = "v" + VERSION;
-genLevel(1); resize();
+document.getElementById("langClose").onclick = () => langBox.classList.add("hidden");
+langBox.onclick = e => {
+  if (e.target === langBox || e.target.id === "langTitle") langBox.classList.add("hidden");
+};
+
+/* ── загрузка ───────────────────────────────────────────────────
+   Порядок важен: сначала инициализируем SDK и достаём сохранение,
+   и только потом показываем игру и сообщаем платформе game_ready. */
+// на своём сайте SDK нет, но звук всё равно обязан замолкать при сворачивании
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { hostMuted = true; hostPaused = true; }
+  else if (!SDK) { hostMuted = false; hostPaused = false; }
+});
+
+// Esc: закрыть окно языка, иначе выйти в меню. Требованием не является,
+// но игроки на десктопе ждут именно этого.
+addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (!langBox.classList.contains("hidden")) { langBox.classList.add("hidden"); return; }
+  if (running) goHome();
+});
+
+function boot() {
+  const init = SDK ? SDK.initialize().catch(() => {}) : Promise.resolve();
+  init.then(loadSave).then(() => {
+    stars = store.get("cc_stars", {}) || {};
+    maxLevel = store.get("cc_level", 1) || 1;
+    muted = !!store.get("cc_mute", false);
+
+    // язык: выбор игрока важнее, иначе берём язык платформы
+    const saved = store.get("cc_lang", null);
+    let fromPlatform = "";
+    try { fromPlatform = SDK ? String(SDK.platform.language || "").slice(0, 2) : ""; } catch (e) {}
+    lang = (saved && STR[saved]) ? saved : (STR[fromPlatform] ? fromPlatform : "en");
+    document.documentElement.lang = lang;
+
+    if (SDK) {
+      try {
+        hostMuted = SDK.platform.isAudioEnabled === false;
+        SDK.platform.on(SDK.EVENT_NAME.AUDIO_STATE_CHANGED, on => { hostMuted = !on; });
+        SDK.platform.on(SDK.EVENT_NAME.PAUSE_STATE_CHANGED, p => { hostPaused = !!p; });
+      } catch (e) {}
+    }
+
+    buildLangList(); markLang(); refreshStart();
+    genLevel(1); resize();
+
+    if (SDK) { try { SDK.platform.sendMessage("game_ready"); } catch (e) {} }
+  });
+}
+boot();
 </script>
 </body>
 </html>
