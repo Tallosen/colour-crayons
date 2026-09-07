@@ -68,7 +68,13 @@
 не нужно: список кнопок строится из его ключей.
 
 ## Playgama Bridge SDK — встроен
-Подключается с CDN в `<head>`, рядом лежит `playgama-bridge-config.json`.
+SDK **вшит прямо в `index.html`** (версия 2.1.0, npm-пакет `@playgama/bridge`),
+рядом лежит `playgama-bridge-config.json`.
+
+Почему не CDN: платформы вроде YouTube Playables запрещают внешние
+запросы, а CDN Playgama может быть недоступен из некоторых сетей —
+тогда `bridge` не появляется и игра не отправляет `game_ready`.
+Обновлять SDK: `npm i @playgama/bridge` и заменить вшитый блок.
 
 Что реализовано из обязательного:
 - ожидание `bridge.initialize()` до старта игры
