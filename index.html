@@ -57,7 +57,7 @@
 
 <script>
 "use strict";
-const VERSION = "3.3";
+const VERSION = "3.4";
 
 /* ══════════════════════════════════════════════════════════════
    Colour Crayons — механика простая: мелок красит целую линию,
@@ -478,7 +478,9 @@ function draw() {
 }
 const restartBtn = () => ({ x: W - 40, y: 40, r: 20 });
 function bar() {
-  const y = L.gy + L.size + L.cell * 2.35, r = Math.min(26, L.cell * .32), gap = r * 2.7;
+  const r = Math.max(22, Math.min(26, L.cell * .32)), gap = r * 2.7;
+  // ряд опускаем ниже строки счёта: она на 1.75, а кнопки теперь крупнее клетки
+  const y = L.gy + L.size + Math.max(L.cell * 2.35, L.cell * 1.75 + r + 16);
   return [
     { id: "home",  x: W / 2 - gap * 1.5, y, r },
     { id: "undo",  x: W / 2 - gap * .5,  y, r },
@@ -666,7 +668,7 @@ cv.addEventListener("pointerdown", e => {
     return;
   }
   for (const b of bar()) {
-    if (Math.abs(px - b.x) < b.r + 6 && Math.abs(py - b.y) < b.r + 6) {
+    if (Math.abs(px - b.x) < Math.max(22, b.r + 6) && Math.abs(py - b.y) < Math.max(22, b.r + 6)) {
       if (b.id === "home") goHome();
       else if (b.id === "undo") undo();
       else if (b.id === "again") { genLevel(level); history = []; layout(); }
@@ -675,13 +677,15 @@ cv.addEventListener("pointerdown", e => {
     }
   }
   if (!running || anim) return;
+  // зона касания не уже 44px, даже если мелок нарисован мельче
+  const hitLong = Math.max(24, L.cell * .62), hitShort = Math.max(22, L.cell * .5);
   const rx = L.gx + L.size + L.cell * .70;
   for (let i = 0; i < gridN; i++)
-    if (Math.abs(px - rx) < L.cell * .62 && Math.abs(py - (L.gy + (i + .5) * L.cell)) < L.cell * .5)
+    if (Math.abs(px - rx) < hitLong && Math.abs(py - (L.gy + (i + .5) * L.cell)) < hitShort)
       return stroke("row", i);
   const cy = L.gy + L.size + L.cell * .70;
   for (let i = 0; i < gridN; i++)
-    if (Math.abs(py - cy) < L.cell * .62 && Math.abs(px - (L.gx + (i + .5) * L.cell)) < L.cell * .5)
+    if (Math.abs(py - cy) < hitLong && Math.abs(px - (L.gx + (i + .5) * L.cell)) < hitShort)
       return stroke("col", i);
 });
 
